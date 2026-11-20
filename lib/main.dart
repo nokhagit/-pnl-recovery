@@ -1,4 +1,4 @@
-```
+
 import 'dart:convert';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
@@ -192,4 +192,4 @@ Widget friendsPage() => ListView(
   void calculator(){final q1=TextEditingController(),p1=TextEditingController(),q2=TextEditingController(),p2=TextEditingController();showModalBottomSheet(context:context,isScrollControlled:true,showDragHandle:true,builder:(c)=>StatefulBuilder(builder:(c,refresh){final a=double.tryParse(q1.text)??0,b=double.tryParse(p1.text)??0,d=double.tryParse(q2.text)??0,e=double.tryParse(p2.text)??0;final avg=a+d>0?(a*b+d*e)/(a+d):0;return Padding(padding:EdgeInsets.fromLTRB(20,10,20,MediaQuery.of(c).viewInsets.bottom+24),child:SingleChildScrollView(child:Column(mainAxisSize:MainAxisSize.min,children:[const Text('Stock Average Calculator',style:TextStyle(fontSize:20,fontWeight:FontWeight.bold)),const SizedBox(height:14),...[(q1,'Existing Quantity'),(p1,'Existing Buy Price'),(q2,'New Quantity'),(p2,'New Buy Price')].map((v)=>Padding(padding:const EdgeInsets.only(bottom:10),child:TextField(controller:v.$1,keyboardType:const TextInputType.numberWithOptions(decimal:true),onChanged:(_)=>refresh((){}),decoration:InputDecoration(labelText:v.$2,border:const OutlineInputBorder())))),Card(child:ListTile(title:const Text('Average Price'),trailing:Text('₹${avg.toStringAsFixed(2)}',style:const TextStyle(fontWeight:FontWeight.bold,fontSize:20))))])));}));}
 }
 class RingPainter extends CustomPainter {final int amount,total;RingPainter(this.amount,this.total);@override void paint(Canvas canvas,Size size){final r=Rect.fromLTWH(4,4,size.width-8,size.height-8);final bg=Paint()..color=Colors.grey.withValues(alpha:.22)..style=PaintingStyle.stroke..strokeWidth=6;final fg=Paint()..color=amount<0?kRed:kGreen..style=PaintingStyle.stroke..strokeCap=StrokeCap.round..strokeWidth=6;canvas.drawArc(r,0,math.pi*2,false,bg);if(total>0)canvas.drawArc(r,-math.pi/2,math.pi*2*amount.abs()/total,false,fg);}@override bool shouldRepaint(covariant RingPainter old)=>old.amount!=amount||old.total!=total;}
-```
+
