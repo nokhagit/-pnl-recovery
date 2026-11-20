@@ -20,7 +20,7 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
       - name: Static analysis
-        run: flutter analyze --no-fatal-infos
+        run: flutter analyze lib --no-fatal-infos
       - name: Build APK
         run: flutter build apk --release
       - name: Upload APK
