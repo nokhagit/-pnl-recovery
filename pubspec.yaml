@@ -1,7 +1,7 @@
 name: pnl_recovery
 description: Offline Trade Ledger Pro
 publish_to: none
-version: 2.3.0+5
+version: 2.5.0+7
 environment:
   sdk: '>=3.4.0 <4.0.0'
 dependencies:
@@ -11,5 +11,16 @@ dependencies:
   intl: ^0.20.2
   pdf: ^3.11.3
   printing: ^5.14.2
+  file_picker: ^8.3.7
+  path_provider: ^2.1.5
+  share_plus: ^10.1.4
+dev_dependencies:
+  flutter_launcher_icons: ^0.14.3
 flutter:
   uses-material-design: true
+flutter_launcher_icons:
+  android: true
+  ios: false
+  image_path: assets/app_icon.png
+  adaptive_icon_background: '#0B1020'
+  adaptive_icon_foreground: assets/app_icon.png
