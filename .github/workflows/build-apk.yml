@@ -19,11 +19,13 @@ jobs:
         run: flutter create --platforms=android --project-name pnl_recovery .
       - name: Install dependencies
         run: flutter pub get
+      - name: Static analysis
+        run: flutter analyze --no-fatal-infos
       - name: Build APK
         run: flutter build apk --release
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: Trade-Ledger-Pro-v2.1-APK
+          name: Trade-Ledger-Pro-v2.2-APK
           path: build/app/outputs/flutter-apk/app-release.apk
           retention-days: 14
