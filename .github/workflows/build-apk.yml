@@ -15,8 +15,14 @@ jobs:
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
+
       - name: Generate Android project
         run: flutter create --platforms=android --project-name pnl_recovery .
+
+      - name: Set Android compileSdk to 36
+        run: |
+          sed -i 's/compileSdk = flutter.compileSdkVersion/compileSdk = 36/' android/app/build.gradle.kts
+
       - name: Set installed app name
         run: |
           python3 - <<'PYTHON'
@@ -26,6 +32,7 @@ jobs:
           s = s.replace('android:label="pnl_recovery"', 'android:label="TRADE LEDGER"')
           p.write_text(s)
           PYTHON
+
       - name: Install dependencies
         run: flutter pub get
       - name: Generate app icon
