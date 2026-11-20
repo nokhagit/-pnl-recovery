@@ -1,4 +1,8 @@
 import 'dart:convert';
+import 'dart:io';
+import 'package:file_picker/file_picker.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:share_plus/share_plus.dart';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
@@ -7,6 +11,8 @@ import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
 
+const templeRed = Color(0xFFE34B50);
+const gold = Color(0xFFE5B84A);
 const violet = Color(0xFF8861F4);
 const gain = Color(0xFF16B887);
 const loss = Color(0xFFF35D78);
@@ -272,7 +278,110 @@ class _LedgerHomeState extends State<LedgerHome> {
           ])),
       ],
     ));
-    await Printing.layoutPdf(onLayout: (_) async => pdf.save());
+    final safeName = (friend ?? 'Personal_Trading_Report')
+        .trim().replaceAll(RegExp(r'[^a-zA-Z0-9_-]+'), '_');
+    final fileName = friend == null
+        ? 'Trade_Ledger_Personal_${DateFormat('yyyy_MM_dd').format(DateTime.now())}.pdf'
+        : 'Trade_Ledger_${safeName}_${DateFormat('yyyy_MM_dd').format(DateTime.now())}.pdf';
+    await Printing.sharePdf(bytes: await pdf.save(), filename: fileName);
+  }
+
+  Future<void> exportBackup() async {
+    try {
+      final data = jsonEncode({
+        'app': 'Trade Ledger Pro', 'schemaVersion': 1,
+        'exportedAt': DateTime.now().toIso8601String(),
+        'entries': entries.map((e) => e.toJson()).toList(),
+        'friends': friends,
+      });
+      final dir = await getTemporaryDirectory();
+      final fileName = 'Trade_Ledger_Backup_${DateFormat('yyyyMMdd_HHmm').format(DateTime.now())}.json';
+      final file = File('${dir.path}/$fileName');
+      await file.writeAsString(data, flush: true);
+      await Share.shareXFiles([XFile(file.path, mimeType: 'application/json')],
+        subject: 'Trade Ledger Backup');
+    } catch (e) {
+      if (mounted) toast('Backup failed: $e');
+    }
+  }
+
+  Future<void> importBackup() async {
+    try {
+      final result = await FilePicker.platform.pickFiles(type: FileType.custom,
+        allowedExtensions: ['json'], withData: true);
+      if (result == null || result.files.isEmpty) return;
+      final picked = result.files.single;
+      final bytes = picked.bytes ?? (picked.path == null ? null : await File(picked.path!).readAsBytes());
+      if (bytes == null) throw const FormatException('Unable to read selected file');
+      final decoded = jsonDecode(utf8.decode(bytes));
+      if (decoded is! Map || decoded['app'] != 'Trade Ledger Pro' ||
+          decoded['schemaVersion'] != 1 || decoded['entries'] is! List ||
+          decoded['friends'] is! List) {
+        throw const FormatException('Not a supported Trade Ledger backup');
+      }
+      final newEntries = (decoded['entries'] as List).map((v) {
+        if (v is! Map || v['id'] is! String || v['type'] is! String ||
+            v['friend'] is! String || v['date'] is! String ||
+            DateTime.tryParse(v['date'] as String) == null ||
+            v['amount'] is! int || (v['amount'] as int) <= 0 ||
+            !['Profit', 'Loss', 'Charges'].contains(v['type'])) {
+          throw const FormatException('Backup contains invalid entries');
+        }
+        return LedgerEntry.fromJson(Map<String, dynamic>.from(v));
+      }).toList();
+      final newFriends = (decoded['friends'] as List).map((v) {
+        if (v is! String || v.trim().isEmpty) throw const FormatException('Invalid friend name');
+        return v;
+      }).toList();
+      if (!mounted) return;
+      final approved = await showDialog<bool>(context: context, builder: (c) => AlertDialog(
+        title: const Text('Restore backup?'),
+        content: Text('This will REPLACE all current data with ${newEntries.length} entries '
+          'and ${newFriends.length} friends. Export your current backup first.'),
+        actions: [TextButton(onPressed: () => Navigator.pop(c, false),
+          child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(c, true),
+            child: const Text('Replace & Restore'))],
+      )) ?? false;
+      if (!approved || !mounted) return;
+      // Preserve the existing storage keys so upgrades do not lose user data.
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('ledger_v23_entries',
+        jsonEncode(newEntries.map((e) => e.toJson()).toList()));
+      await prefs.setString('ledger_v23_friends', jsonEncode(newFriends));
+      if (!mounted) return;
+      setState(() { entries = newEntries; friends = newFriends; });
+      toast('Backup restored successfully');
+    } catch (e) {
+      if (mounted) toast('Restore failed: $e');
+    }
+  }
+
+  void showBackupMenu() {
+    showModalBottomSheet<void>(context: context, showDragHandle: true,
+      builder: (c) => SafeArea(child: Padding(padding: const EdgeInsets.all(16),
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          const ListTile(title: Text('Backup & Restore'),
+            subtitle: Text('Keep your JSON backup in a safe place.')),
+          ListTile(leading: const Icon(Icons.upload_file), title: const Text('Export Backup'),
+            subtitle: const Text('Save or share all trading and friend data'),
+            onTap: () { Navigator.pop(c); exportBackup(); }),
+          ListTile(leading: const Icon(Icons.restore), title: const Text('Import Backup'),
+            subtitle: const Text('Restore from a JSON file (replaces current data)'),
+            onTap: () { Navigator.pop(c); importBackup(); }),
+        ]))));
+  }
+
+  void showAboutApp() {
+    showAboutDialog(context: context, applicationName: 'TRADE LEDGER',
+      applicationVersion: '2.5.0', applicationIcon: const Icon(Icons.show_chart, color: gold, size: 40),
+      children: const [Text('Offline personal trading profit and loss tracker.\n'
+        'Daily entries with profit and loss history.\n'
+        'Weekly and monthly performance summaries.\n'
+        'Separate friend ledgers with charges.\n'
+        'Average price calculator and colored PDF reports.\n'
+        'Manual JSON backup and restore for new phones.\n\n'
+        'MADE BY YOGENDRA', style: TextStyle(height: 1.6))]);
   }
 
   Widget heading(String text, {Widget? action}) => Padding(
@@ -307,7 +416,7 @@ class _LedgerHomeState extends State<LedgerHome> {
         const SizedBox(height: 13),
         Row(children: [stat('Total Profit', cash(profits(personal)), gain),
           stat('Total Loss', cash(losses(personal)), loss),
-          stat('Trading Days', '$tradingDays', textColor)]),
+          stat('Days', '$tradingDays', textColor)]),
       ]));
   }
   DateTime get monday {
@@ -371,8 +480,6 @@ class _LedgerHomeState extends State<LedgerHome> {
     heading('Monthly P&L'),
     monthCard(),
     const SizedBox(height: 12),
-    FilledButton.icon(onPressed: () => editEntry(), icon: const Icon(Icons.add),
-      label: const Padding(padding: EdgeInsets.all(10), child: Text('Add Profit / Loss'))),
   ]);
   Widget entryTile(LedgerEntry e) => ListTile(
     leading: CircleAvatar(backgroundColor: valueColor(e.signed).withValues(alpha: .12),
@@ -394,7 +501,7 @@ class _LedgerHomeState extends State<LedgerHome> {
     }
     final keys = days.keys.toList()..sort((a, b) => b.compareTo(a));
     return ListView(padding: const EdgeInsets.fromLTRB(16, 12, 16, 115), children: [
-      heading('Trading Days', action: IconButton(onPressed: () => exportPdf(),
+      heading('Days', action: IconButton(onPressed: () => exportPdf(),
         icon: const Icon(Icons.picture_as_pdf_outlined), tooltip: 'Export PDF')),
       Card(child: Row(children: [IconButton(onPressed: () => setState(() => tradeMonth =
           DateTime(tradeMonth.year, tradeMonth.month - 1)), icon: const Icon(Icons.chevron_left)),
@@ -448,23 +555,35 @@ class _LedgerHomeState extends State<LedgerHome> {
     }),
   ]);
   @override Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(toolbarHeight: 77, title: const Column(crossAxisAlignment: CrossAxisAlignment.start,
-      children: [Text('जय श्री पूनरासर', style: TextStyle(color: violet, fontSize: 12,
-        fontWeight: FontWeight.w800)), SizedBox(height: 4),
-        Text('Trade Ledger Pro', style: TextStyle(fontWeight: FontWeight.w900, fontSize: 21))]),
+    appBar: AppBar(toolbarHeight: 77, title: Column(crossAxisAlignment: CrossAxisAlignment.start,
+      children: [const Text('जय श्री पूनरासर', style: TextStyle(color: templeRed, fontSize: 12,
+        fontWeight: FontWeight.w900)), const SizedBox(height: 4),
+        RichText(text: TextSpan(style: TextStyle(fontWeight: FontWeight.w900, fontSize: 21,
+          color: Theme.of(context).colorScheme.onSurface), children: [
+          const TextSpan(text: 'TRADE LEDGER '),
+          WidgetSpan(alignment: PlaceholderAlignment.middle, child: ShaderMask(
+            shaderCallback: (bounds) => const LinearGradient(colors: [
+              Color(0xFF9C6619), Color(0xFFFFE59B), Color(0xFFD5A332), Color(0xFFFFE9A7)
+            ]).createShader(bounds),
+            child: const Text('PRO', style: TextStyle(fontWeight: FontWeight.w900,
+              fontSize: 21, color: Colors.white)))),
+        ]))]),
       actions: [IconButton(tooltip: 'Toggle theme', onPressed: widget.toggleTheme,
         icon: Icon(widget.dark ? Icons.light_mode_outlined : Icons.dark_mode_outlined))]),
     drawer: Drawer(child: SafeArea(child: ListView(children: [
       const DrawerHeader(child: Column(crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisAlignment: MainAxisAlignment.center, children: [
-        Text('जय श्री पूनरासर', style: TextStyle(color: violet)),
+        Text('जय श्री पूनरासर', style: TextStyle(color: templeRed, fontWeight: FontWeight.bold)),
         SizedBox(height: 10), Text('Trade Ledger Pro',
           style: TextStyle(fontWeight: FontWeight.w900, fontSize: 23))])),
       ListTile(leading: const Icon(Icons.picture_as_pdf_outlined),
         title: const Text('Export Personal PDF'), onTap: () { Navigator.pop(context); exportPdf(); }),
       ListTile(leading: const Icon(Icons.brightness_6_outlined),
         title: const Text('Dark / Light Theme'), onTap: () { Navigator.pop(context); widget.toggleTheme(); }),
-      const ListTile(leading: Icon(Icons.info_outline), title: Text('Version 2.3')),
+       ListTile(leading: const Icon(Icons.backup_outlined), title: const Text('Backup & Restore'),
+         onTap: () { Navigator.pop(context); showBackupMenu(); }),
+       ListTile(leading: const Icon(Icons.info_outline), title: const Text('About App • Version 2.5'),
+         onTap: () { Navigator.pop(context); showAboutApp(); }),
     ]))),
     body: !loaded ? const Center(child: CircularProgressIndicator()) : IndexedStack(index: tab,
       children: [homePage(), daysPage(), const AverageCalculator(), friendsPage()]),
