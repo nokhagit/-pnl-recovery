@@ -103,7 +103,88 @@ class _LedgerAppState extends State<LedgerApp> {
   Widget metric(String title,int amount,Color color,IconData icon)=>Card(child:Padding(padding:const EdgeInsets.all(15),child:Column(crossAxisAlignment:CrossAxisAlignment.start,children:[Icon(icon,color:color),const SizedBox(height:9),Text(title,style:const TextStyle(fontSize:10,fontWeight:FontWeight.w700)),const SizedBox(height:5),FittedBox(child:Text(money(amount),style:TextStyle(fontSize:20,fontWeight:FontWeight.w800,color:color)))])));
   Widget tradesPage()=>ListView(padding:const EdgeInsets.all(16),children:[const Text('Grouped by trading category',style:TextStyle(color:Colors.grey)),const SizedBox(height:12),...categories.map((c){final entries=personal.where((r)=>r.category==c).toList()..sort((a,b)=>b.date.compareTo(a.date));final sum=entries.fold(0,(int s,Record r)=>s+r.signed);return Card(child:ExpansionTile(title:Text(c,style:const TextStyle(fontWeight:FontWeight.bold)),subtitle:Text('${entries.length} trades'),trailing:Text('${sum<0?'-':''}${money(sum)}',style:TextStyle(color:sum<0?kRed:kGreen,fontWeight:FontWeight.bold)),children:entries.map(entryTile).toList());})]);
   Widget entryTile(Record r)=>ListTile(title:Text(r.kind=='Other'?'Other • ${r.category}':r.kind),subtitle:Text('${dateLabel(r.date)}${r.note.isEmpty?'':' • ${r.note}'}'),trailing:Row(mainAxisSize:MainAxisSize.min,children:[Text(r.kind=='Other'?(r.category=='Given'?'-${money(r.paise)}':'+${money(r.paise)}'):signedMoney(r.signed),style:TextStyle(color:r.kind=='Other'?(r.category=='Given'?kRed:kGreen):r.signed<0?kRed:kGreen,fontWeight:FontWeight.bold)),PopupMenuButton<String>(onSelected:(v){if(v=='edit')openEntry(existing:r);else deleteRecord(r);},itemBuilder:(c)=>const [PopupMenuItem(value:'edit',child:Text('Edit')),PopupMenuItem(value:'delete',child:Text('Delete'))]) ]));
-  Widget friendsPage()=>ListView(padding:const EdgeInsets.fromLTRB(16,10,16,100),children:[FilledButton.icon(onPressed:addFriend,icon:const Icon(Icons.person_add_alt_1),label:const Text('Add Friend')),const SizedBox(height:12),if(friends.isEmpty)const Padding(padding:EdgeInsets.all(25),child:Center(child:Text('Add a friend to track their separate 100% balance.'))),...friends.map((f){final rs=records.where((r)=>r.friend==f).toList()..sort((a,b)=>b.date.compareTo(a.date));return Card(child:ExpansionTile(title:Text(f,style:const TextStyle(fontWeight:FontWeight.bold)),subtitle:Text('100% friend balance • ${rs.length} entries'),trailing:Text('${friendNet(f)<0?'-':''}${money(friendNet(f))}',style:TextStyle(color:friendNet(f)<0?kRed:kGreen,fontWeight:FontWeight.bold)),children:[Padding(padding:const EdgeInsets.symmetric(horizontal:12),child:Row(children:[Expanded(child:FilledButton.icon(onPressed:()=>openEntry(friend:f),icon:const Icon(Icons.add),label:const Text('Add Entry'))),IconButton(tooltip:'PDF',onPressed:()=>exportPdf(friend:f),icon:const Icon(Icons.picture_as_pdf_outlined)),IconButton(tooltip:'Remove friend',onPressed:() async {if(await confirm('Remove $f?','This will delete all entries for this friend.')){setState((){friends.remove(f);records.removeWhere((r)=>r.friend==f);});save();}},icon:const Icon(Icons.delete_outline))])),...rs.map(entryTile)]);})]);
+
+Widget friendsPage() => ListView(
+  padding: const EdgeInsets.fromLTRB(16, 10, 16, 100),
+  children: [
+    FilledButton.icon(
+      onPressed: addFriend,
+      icon: const Icon(Icons.person_add_alt_1),
+      label: const Text('Add Friend'),
+    ),
+    const SizedBox(height: 12),
+    if (friends.isEmpty)
+      const Padding(
+        padding: EdgeInsets.all(25),
+        child: Center(
+          child: Text(
+            'Add a friend to track their separate 100% balance.',
+          ),
+        ),
+      ),
+    ...friends.map((f) {
+      final rs = records.where((r) => r.friend == f).toList()
+        ..sort((a, b) => b.date.compareTo(a.date));
+
+      return Card(
+        child: ExpansionTile(
+          title: Text(
+            f,
+            style: const TextStyle(fontWeight: FontWeight.bold),
+          ),
+          subtitle: Text(
+            '100% friend balance • ${rs.length} entries',
+          ),
+          trailing: Text(
+            '${friendNet(f) < 0 ? '-' : ''}${money(friendNet(f))}',
+            style: TextStyle(
+              color: friendNet(f) < 0 ? kRed : kGreen,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          children: [
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: FilledButton.icon(
+                      onPressed: () => openEntry(friend: f),
+                      icon: const Icon(Icons.add),
+                      label: const Text('Add Entry'),
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: 'PDF',
+                    onPressed: () => exportPdf(friend: f),
+                    icon: const Icon(Icons.picture_as_pdf_outlined),
+                  ),
+                  IconButton(
+                    tooltip: 'Remove friend',
+                    onPressed: () async {
+                      if (await confirm(
+                        'Remove $f?',
+                        'This will delete all entries for this friend.',
+                      )) {
+                        setState(() {
+                          friends.remove(f);
+                          records.removeWhere((r) => r.friend == f);
+                        });
+                        save();
+                      }
+                    },
+                    icon: const Icon(Icons.delete_outline),
+                  ),
+                ],
+              ),
+            ),
+            ...rs.map(entryTile),
+          ],
+        ),
+      );
+    }),
+  ],
+);
   void showCategory(String c){showModalBottomSheet(context:context,isScrollControlled:true,showDragHandle:true,builder:(ctx)=>SafeArea(child:FractionallySizedBox(heightFactor:.75,child:Column(children:[ListTile(title:Text(c),trailing:IconButton(icon:const Icon(Icons.picture_as_pdf),onPressed:()=>exportPdf(category:c))),Expanded(child:ListView(children:(personal.where((r)=>r.category==c).toList()..sort((a,b)=>b.date.compareTo(a.date))).map(entryTile).toList()))]))));}
   void categoryReport(){showModalBottomSheet(context:context,showDragHandle:true,builder:(c)=>SafeArea(child:Column(mainAxisSize:MainAxisSize.min,children:[const Text('Choose Category Report'),...categories.map((cat)=>ListTile(title:Text(cat),trailing:const Icon(Icons.download),onTap:(){Navigator.pop(c);exportPdf(category:cat);})),const SizedBox(height:12)])));}
   void monthlyReport(){final months=personal.map((r)=>DateTime(r.date.year,r.date.month)).toSet().toList()..sort((a,b)=>b.compareTo(a));showModalBottomSheet(context:context,showDragHandle:true,builder:(c)=>SafeArea(child:Column(mainAxisSize:MainAxisSize.min,children:[const Text('Monthly PDF Reports'),if(months.isEmpty)const ListTile(title:Text('No entries yet')),SizedBox(height:math.min(months.length*60.0,450),child:ListView(children:months.map((m)=>ListTile(title:Text(DateFormat('MMMM yyyy').format(m)),trailing:const Icon(Icons.download),onTap:(){Navigator.pop(c);exportPdf(month:m);})).toList()))])));}
