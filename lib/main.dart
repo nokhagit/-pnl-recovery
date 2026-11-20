@@ -1,195 +1,106 @@
-
 import 'dart:convert';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import 'package:intl/intl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:intl/intl.dart';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
 
-const categories = ['NIFTY/BANKNIFTY/SENSEX', 'STOCK OPTION', 'EQUITY', 'COMMODITY'];
-const kGreen = Color(0xFF19BD88), kRed = Color(0xFFE65C70), kPurple = Color(0xFF7464EB);
-String money(int paise) => '₹${NumberFormat('#,##,##0.00', 'en_IN').format(paise.abs() / 100)}';
-String signedMoney(int p) => '${p < 0 ? '-' : '+'}${money(p)}';
-String dateLabel(DateTime d) => DateFormat('dd MMM yyyy').format(d);
-int? parseMoney(String s) { final n = double.tryParse(s.trim()); if (n == null || !n.isFinite || n <= 0 || n > 100000000000) return null; return (n * 100).round(); }
+const categories = ['OPTIONS', 'STOCK OPTION', 'EQUITY', 'COMMODITY'];
+const purple = Color(0xFF8554EE);
+const green = Color(0xFF17C995);
+const red = Color(0xFFFF5B83);
+final money = NumberFormat.currency(locale: 'en_IN', symbol: '₹', decimalDigits: 2);
+String fmt(int paise) => money.format(paise / 100);
+int? parsePaise(String input) {
+  final n = double.tryParse(input.trim());
+  if (n == null || !n.isFinite || n <= 0 || n > 10000000000) return null;
+  return (n * 100).round();
+}
 
-class Record {
-  final String id, category, note, friend, kind;
+class Entry {
+  final String id, category, friend, kind, note;
   final int paise;
   final DateTime date;
-  const Record({required this.id, required this.category, required this.note, required this.friend, required this.kind, required this.paise, required this.date});
-  bool get isFriend => friend.isNotEmpty;
-  int get signed => kind == 'Profit' ? paise : kind == 'Loss' ? -paise : 0;
-  Map<String, dynamic> toJson() => {'id':id,'category':category,'note':note,'friend':friend,'kind':kind,'amountPaise':signed,'date':date.toIso8601String(),'paise':paise};
-  factory Record.fromJson(Map<String,dynamic> j) {
-    final old = (j['amountPaise'] as num?)?.toInt() ?? 0;
-    final p = (j['paise'] as num?)?.toInt() ?? old.abs();
-    return Record(id:'${j['id'] ?? DateTime.now().microsecondsSinceEpoch}',category:'${j['category'] ?? categories.first}',note:'${j['note'] ?? ''}',friend:'${j['friend'] ?? ''}',kind:'${j['kind'] ?? (old >= 0 ? 'Profit' : 'Loss')}',paise:p.abs(),date:DateTime.tryParse('${j['date']}') ?? DateTime.now());
-  }
+  Entry({required this.id, required this.category, required this.friend, required this.kind, required this.note, required this.paise, required this.date});
+  int get signed => kind == 'Profit' ? paise : kind == 'Loss' ? -paise : (kind == 'Received' ? paise : -paise);
+  Map<String, dynamic> toJson() => {'id': id, 'category': category, 'friend': friend, 'kind': kind, 'note': note, 'paise': paise, 'date': date.toIso8601String()};
+  factory Entry.fromJson(Map<String, dynamic> j) => Entry(id: '${j['id'] ?? ''}', category: '${j['category'] ?? 'OPTIONS'}' == 'NIFTY/BANKNIFTY/SENSEX' ? 'OPTIONS' : '${j['category'] ?? 'OPTIONS'}', friend: '${j['friend'] ?? ''}', kind: '${j['kind'] ?? 'Profit'}', note: '${j['note'] ?? ''}', paise: (j['paise'] as num?)?.toInt() ?? (j['amountPaise'] as num?)?.abs().toInt() ?? 0, date: DateTime.tryParse('${j['date']}') ?? DateTime.now());
 }
+
 void main() { WidgetsFlutterBinding.ensureInitialized(); runApp(const LedgerApp()); }
 class LedgerApp extends StatefulWidget { const LedgerApp({super.key}); @override State<LedgerApp> createState() => _LedgerAppState(); }
 class _LedgerAppState extends State<LedgerApp> {
-  List<Record> records = []; List<String> friends = []; bool dark = true; bool ready = false; int tab = 0;
+  bool dark = true;
+  @override Widget build(BuildContext context) => MaterialApp(debugShowCheckedModeBanner: false, title: 'Trade Ledger Pro', themeMode: dark ? ThemeMode.dark : ThemeMode.light,
+    theme: ThemeData(useMaterial3: true, colorSchemeSeed: purple, scaffoldBackgroundColor: const Color(0xFFF6F5FA), cardTheme: CardThemeData(color: Colors.white, elevation: 0, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)))),
+    darkTheme: ThemeData(useMaterial3: true, brightness: Brightness.dark, colorSchemeSeed: purple, scaffoldBackgroundColor: const Color(0xFF0C1020), cardTheme: CardThemeData(color: const Color(0xFF1C2037), elevation: 0, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)))),
+    home: LedgerHome(dark: dark, onTheme: () => setState(() => dark = !dark)));
+}
+class LedgerHome extends StatefulWidget { final bool dark; final VoidCallback onTheme; const LedgerHome({super.key, required this.dark, required this.onTheme}); @override State<LedgerHome> createState() => _LedgerHomeState(); }
+class _LedgerHomeState extends State<LedgerHome> {
+  List<Entry> entries = [];
+  List<String> friends = [];
+  int tab = 0;
+  DateTime selectedMonth = DateTime(DateTime.now().year, DateTime.now().month);
   @override void initState() { super.initState(); load(); }
   Future<void> load() async {
-    final sp = await SharedPreferences.getInstance();
+    final p = await SharedPreferences.getInstance();
     try {
-      final raw = sp.getString('tlp_records_v21');
-      if (raw != null) { records = (jsonDecode(raw) as List).map((e)=>Record.fromJson(Map<String,dynamic>.from(e))).toList(); }
-      else {
-        // Import the original personal ledger without changing its existing storage.
-        for (final key in ['entries','pnl_entries','trades']) {
-          final legacy = sp.getString(key); if (legacy == null) continue;
-          final decoded = jsonDecode(legacy);
-          if (decoded is List) { records = decoded.map((e)=>Record.fromJson(Map<String,dynamic>.from(e))).toList(); break; }
-        }
-      }
-    } catch (_) { records = []; }
-    friends = sp.getStringList('tlp_friends_v21') ?? [];
-    dark = sp.getBool('tlp_dark_v21') ?? true;
-    if (mounted) setState(()=>ready=true);
+      final raw = p.getString('ledger_v22_entries');
+      final f = p.getString('ledger_v22_friends');
+      if (!mounted) return;
+      setState(() { entries = raw == null ? [] : (jsonDecode(raw) as List).map((e) => Entry.fromJson(Map<String, dynamic>.from(e as Map))).toList(); friends = f == null ? [] : List<String>.from(jsonDecode(f) as List); });
+    } catch (_) { if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Saved data could not be read. Existing data was not overwritten.'))); }
   }
-  Future<void> save() async { final sp = await SharedPreferences.getInstance(); await sp.setString('tlp_records_v21',jsonEncode(records.map((e)=>e.toJson()).toList())); await sp.setStringList('tlp_friends_v21',friends); await sp.setBool('tlp_dark_v21',dark); }
-  void updateRecord(Record r) { setState(() { records.removeWhere((e)=>e.id==r.id); records.add(r); }); save(); }
-  Future<void> deleteRecord(Record r) async { if (await confirm('Delete entry?', 'This entry will be removed permanently.')) { setState(()=>records.removeWhere((e)=>e.id==r.id)); save(); } }
-  Future<bool> confirm(String title,String body) async => await showDialog<bool>(context:context,builder:(c)=>AlertDialog(title:Text(title),content:Text(body),actions:[TextButton(onPressed:()=>Navigator.pop(c,false),child:const Text('Cancel')),FilledButton(onPressed:()=>Navigator.pop(c,true),child:const Text('Confirm'))])) ?? false;
-  List<Record> get personal => records.where((e)=>!e.isFriend).toList();
-  int get net => personal.fold(0,(int s,Record r)=>s+r.signed);
-  int get profit => personal.where((r)=>r.kind=='Profit').fold(0,(int s,Record r)=>s+r.paise);
-  int get loss => personal.where((r)=>r.kind=='Loss').fold(0,(int s,Record r)=>s+r.paise);
-  void openEntry({Record? existing,String? friend}) {
-    final isFriend = friend != null || (existing?.isFriend ?? false);
-    final name = friend ?? existing?.friend ?? '';
-    var kind = existing?.kind ?? 'Profit', category = categories.contains(existing?.category) ? existing!.category : categories.first;
-    var date = existing?.date ?? DateTime.now();
-    final amount = TextEditingController(text:existing==null?'':(existing.paise/100).toStringAsFixed(2));
-    final note = TextEditingController(text:existing?.note ?? '');
-    showModalBottomSheet(context:context,isScrollControlled:true,showDragHandle:true,builder:(sheetContext)=>StatefulBuilder(builder:(c,setSheet)=>Padding(padding:EdgeInsets.fromLTRB(20,8,20,MediaQuery.of(c).viewInsets.bottom+24),child:SingleChildScrollView(child:Column(mainAxisSize:MainAxisSize.min,crossAxisAlignment:CrossAxisAlignment.stretch,children:[
-      Text(existing==null?'Add ${isFriend?'Friend':'Trade'} Entry':'Edit Entry',style:Theme.of(c).textTheme.titleLarge),const SizedBox(height:16),
-      SegmentedButton<String>(segments:(isFriend?['Profit','Loss','Other']:['Profit','Loss']).map((e)=>ButtonSegment(value:e,label:Text(e))).toList(),selected:{kind},onSelectionChanged:(v)=>setSheet(()=>kind=v.first)),const SizedBox(height:14),
-      TextField(controller:amount,keyboardType:const TextInputType.numberWithOptions(decimal:true),inputFormatters:[FilteringTextInputFormatter.allow(RegExp(r'[0-9.]'))],decoration:const InputDecoration(labelText:'Amount (₹)',prefixIcon:Icon(Icons.currency_rupee),border:OutlineInputBorder())),const SizedBox(height:12),
-      if (!isFriend) ...[DropdownButtonFormField<String>(initialValue:category,isExpanded:true,decoration:const InputDecoration(labelText:'Trading category',border:OutlineInputBorder()),items:categories.map((e)=>DropdownMenuItem(value:e,child:Text(e,overflow:TextOverflow.ellipsis))).toList(),onChanged:(v)=>setSheet(()=>category=v!)),const SizedBox(height:12)],
-      OutlinedButton.icon(onPressed:() async { final d=await showDatePicker(context:c,initialDate:date,firstDate:DateTime(2000),lastDate:DateTime(2100)); if(d!=null)setSheet(()=>date=d); },icon:const Icon(Icons.calendar_month),label:Text(dateLabel(date))),const SizedBox(height:12),
-      TextField(controller:note,maxLength:100,decoration:InputDecoration(labelText:isFriend && kind=='Other'?'Other details (Given / Received)':'Note (optional)',border:const OutlineInputBorder())),
-      if(isFriend && kind=='Other') const Text('For Other: enter money given as a negative adjustment or money received as a positive adjustment using the selector below.'),
-      if(isFriend && kind=='Other') DropdownButtonFormField<String>(initialValue:category=='Given'?'Given':'Received',items:['Received','Given'].map((v)=>DropdownMenuItem(value:v,child:Text(v))).toList(),onChanged:(v)=>setSheet(()=>category=v!),decoration:const InputDecoration(labelText:'Transaction direction')),
-      FilledButton(onPressed:(){ final p=parseMoney(amount.text); if(p==null){ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content:Text('Enter a valid amount greater than zero')));return;} final r=Record(id:existing?.id??DateTime.now().microsecondsSinceEpoch.toString(),category:isFriend && kind=='Other'?(category=='Given'?'Given':'Received'):category,note:note.text.trim(),friend:name,kind:kind,paise:p,date:date);updateRecord(r);Navigator.pop(c);},child:const Text('Save Entry'))
-    ])))));
+  Future<void> save() async { final p = await SharedPreferences.getInstance(); await p.setString('ledger_v22_entries', jsonEncode(entries.map((e) => e.toJson()).toList())); await p.setString('ledger_v22_friends', jsonEncode(friends)); }
+  List<Entry> get personal => entries.where((e) => e.friend.isEmpty).toList();
+  int sum(Iterable<Entry> rows) => rows.fold(0, (a, e) => a + e.signed);
+  int get totalProfit => personal.where((e) => e.signed > 0).fold(0, (a, e) => a + e.signed);
+  int get totalLoss => personal.where((e) => e.signed < 0).fold(0, (a, e) => a - e.signed);
+  int friendNet(String f) => sum(entries.where((e) => e.friend == f));
+  Color signedColor(int value) => value < 0 ? red : green;
+  Future<bool> confirm(String title) async => await showDialog<bool>(context: context, builder: (c) => AlertDialog(title: Text(title), content: const Text('This action cannot be undone.'), actions: [TextButton(onPressed: () => Navigator.pop(c, false), child: const Text('Cancel')), FilledButton(onPressed: () => Navigator.pop(c, true), child: const Text('Delete'))])) ?? false;
+  Future<void> addFriend() async {
+    final controller = TextEditingController();
+    final name = await showDialog<String>(context: context, builder: (c) => AlertDialog(title: const Text('Add Friend'), content: TextField(controller: controller, autofocus: true, textCapitalization: TextCapitalization.words, decoration: const InputDecoration(labelText: 'Friend name')), actions: [TextButton(onPressed: () => Navigator.pop(c), child: const Text('Cancel')), FilledButton(onPressed: () => Navigator.pop(c, controller.text.trim()), child: const Text('Add'))]));
+    controller.dispose(); if (name == null || name.isEmpty || friends.contains(name)) return; setState(() => friends.add(name)); await save();
   }
-  // Friend balance = profits - losses + money received - money given.
-  int friendNet(String f) => records.where((r)=>r.friend==f).fold(0,(int s,Record r)=>s+(r.kind=='Other'?(r.category=='Given'?-r.paise:r.paise):r.signed));
-  Future<void> addFriend() async { final ctrl=TextEditingController(); final name=await showDialog<String>(context:context,builder:(c)=>AlertDialog(title:const Text('Add Friend'),content:TextField(controller:ctrl,maxLength:40,autofocus:true,decoration:const InputDecoration(labelText:'Friend name')),actions:[TextButton(onPressed:()=>Navigator.pop(c),child:const Text('Cancel')),FilledButton(onPressed:()=>Navigator.pop(c,ctrl.text.trim()),child:const Text('Add'))]));if(name!=null&&name.isNotEmpty&&!friends.contains(name)){setState(()=>friends.add(name));save();} }
-  Future<void> exportPdf({String? category,String? friend,DateTime? month}) async {
-    final filtered=records.where((r)=>friend!=null?r.friend==friend:!r.isFriend&&(category==null||r.category==category)&&(month==null||(r.date.year==month.year&&r.date.month==month.month))).toList()..sort((a,b)=>b.date.compareTo(a.date));
-    final pdf=pw.Document();
-    final font=await PdfGoogleFonts.notoSansRegular();
-    final bold=await PdfGoogleFonts.notoSansBold();
-    final total=filtered.fold(0,(int s,Record r)=>s+(r.kind=='Other'?(r.category=='Given'?-r.paise:r.paise):r.signed));
-    String printable(int p) => '${p<0?'-':''}INR ${(p.abs()/100).toStringAsFixed(2)}';
-    pdf.addPage(pw.MultiPage(theme:pw.ThemeData.withFont(base:font,bold:bold),build:(ctx)=>[pw.Text('TRADE LEDGER PRO',style:pw.TextStyle(font:bold,fontSize:22)),pw.SizedBox(height:8),pw.Text(friend!=null?'Friend: $friend':category??(month==null?'All-time Personal Report':DateFormat('MMMM yyyy').format(month))),pw.Text('Net balance: ${printable(total)}'),pw.SizedBox(height:16),pw.TableHelper.fromTextArray(headers:['Date','Category / Type','Note','Amount'],data:filtered.map((r)=>[dateLabel(r.date),r.isFriend?r.kind+(r.kind=='Other'?' (${r.category})':''):r.category,r.note,printable(r.kind=='Other'?(r.category=='Given'?-r.paise:r.paise):r.signed)]).toList()),pw.SizedBox(height:12),pw.Text('Generated offline • ${dateLabel(DateTime.now())}')]));
-    await Printing.sharePdf(bytes:await pdf.save(),filename:'trade-ledger-report.pdf');
+  Future<void> openEntry({String friend = '', Entry? old}) async {
+    final amount = TextEditingController(text: old == null ? '' : (old.paise / 100).toStringAsFixed(2));
+    final note = TextEditingController(text: old?.note ?? '');
+    String category = old?.category ?? categories.first;
+    String kind = old?.kind ?? 'Profit';
+    DateTime date = old?.date ?? DateTime.now();
+    final result = await showModalBottomSheet<Entry>(context: context, isScrollControlled: true, showDragHandle: true, builder: (sheet) => StatefulBuilder(builder: (c, update) => Padding(padding: EdgeInsets.fromLTRB(20, 4, 20, MediaQuery.viewInsetsOf(c).bottom + 24), child: SingleChildScrollView(child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [Text(old == null ? 'Add ${friend.isEmpty ? 'Trade' : 'Friend Entry'}' : 'Edit Entry', style: Theme.of(c).textTheme.titleLarge), const SizedBox(height: 18), if (friend.isEmpty) DropdownButtonFormField<String>(initialValue: category, decoration: const InputDecoration(labelText: 'Category', border: OutlineInputBorder()), items: categories.map((v) => DropdownMenuItem(value: v, child: Text(v))).toList(), onChanged: (v) => update(() => category = v!)), const SizedBox(height: 12), DropdownButtonFormField<String>(initialValue: kind, decoration: const InputDecoration(labelText: 'Type', border: OutlineInputBorder()), items: (friend.isEmpty ? ['Profit', 'Loss'] : ['Profit', 'Loss', 'Received', 'Paid']).map((v) => DropdownMenuItem(value: v, child: Text(friend.isNotEmpty && v == 'Received' ? 'Other: Money Received (+)' : friend.isNotEmpty && v == 'Paid' ? 'Other: Money Paid (-)' : v))).toList(), onChanged: (v) => update(() => kind = v!)), const SizedBox(height: 12), TextField(controller: amount, keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: const InputDecoration(labelText: 'Amount (₹)', border: OutlineInputBorder())), const SizedBox(height: 12), TextField(controller: note, decoration: const InputDecoration(labelText: 'Notes (optional)', border: OutlineInputBorder())), const SizedBox(height: 12), OutlinedButton.icon(onPressed: () async { final picked = await showDatePicker(context: c, initialDate: date, firstDate: DateTime(2000), lastDate: DateTime(2100)); if (picked != null) update(() => date = picked); }, icon: const Icon(Icons.calendar_today), label: Text(DateFormat('dd MMM yyyy').format(date))), const SizedBox(height: 12), FilledButton(onPressed: () { final paise = parsePaise(amount.text); if (paise == null) { ScaffoldMessenger.of(c).showSnackBar(const SnackBar(content: Text('Enter a valid positive amount'))); return; } Navigator.pop(c, Entry(id: old?.id ?? DateTime.now().microsecondsSinceEpoch.toString(), category: friend.isEmpty ? category : '', friend: friend, kind: kind, note: note.text.trim(), paise: paise, date: date)); }, child: const Text('Save Entry'))])))));
+    amount.dispose(); note.dispose(); if (result == null) return;
+    setState(() { if (old != null) entries.removeWhere((e) => e.id == old.id); entries.add(result); }); await save();
   }
-  @override Widget build(BuildContext context) {
-    final scheme=ColorScheme.fromSeed(seedColor:kPurple,brightness:dark?Brightness.dark:Brightness.light);
-    return MaterialApp(debugShowCheckedModeBanner:false,title:'Trade Ledger Pro',theme:ThemeData(useMaterial3:true,colorScheme:scheme,scaffoldBackgroundColor:dark?const Color(0xFF0D1220):const Color(0xFFF5F7FB),cardTheme:CardThemeData(elevation:0,color:dark?const Color(0xFF192238):Colors.white,shape:RoundedRectangleBorder(borderRadius:BorderRadius.circular(20))),inputDecorationTheme:InputDecorationTheme(border:OutlineInputBorder(borderRadius:BorderRadius.circular(14)))),home:!ready?const Scaffold(body:Center(child:CircularProgressIndicator())):Scaffold(appBar:AppBar(backgroundColor:Colors.transparent,title:Column(crossAxisAlignment:CrossAxisAlignment.start,children:[const Text('जय श्री पूनरासर',style:TextStyle(fontSize:12,fontWeight:FontWeight.w600,color:kPurple)),Text(tab==0?'Trade Ledger Pro':tab==1?'Trades':'Friend Trading',style:const TextStyle(fontWeight:FontWeight.w800,fontSize:20))]),actions:[IconButton(onPressed:(){setState(()=>dark=!dark);save();},icon:Icon(dark?Icons.light_mode_outlined:Icons.dark_mode_outlined))]),drawer:Drawer(child:SafeArea(child:ListView(children:[const UserAccountsDrawerHeader(accountName:Text('TRADE LEDGER PRO'),accountEmail:Text('Offline Trading Journal'),currentAccountPicture:CircleAvatar(child:Icon(Icons.show_chart)),decoration:BoxDecoration(color:Color(0xFF5143A9))),ListTile(leading:const Icon(Icons.dashboard_outlined),title:const Text('Dashboard'),onTap:(){Navigator.pop(context);setState(()=>tab=0);}),ListTile(leading:const Icon(Icons.list_alt),title:const Text('Trades'),onTap:(){Navigator.pop(context);setState(()=>tab=1);}),ListTile(leading:const Icon(Icons.people_outline),title:const Text('Friend Trading'),onTap:(){Navigator.pop(context);setState(()=>tab=2);}),const Divider(),ListTile(leading:const Icon(Icons.picture_as_pdf_outlined),title:const Text('All-time PDF Report'),onTap:(){Navigator.pop(context);exportPdf();}),ListTile(leading:const Icon(Icons.calendar_month),title:const Text('Monthly Reports'),onTap:(){Navigator.pop(context);monthlyReport();}),ListTile(leading:const Icon(Icons.pie_chart_outline),title:const Text('Category Reports'),onTap:(){Navigator.pop(context);categoryReport();}),ListTile(leading:const Icon(Icons.calculate_outlined),title:const Text('Stock Average Calculator'),onTap:(){Navigator.pop(context);calculator();}),SwitchListTile(title:const Text('Dark Mode'),secondary:const Icon(Icons.dark_mode_outlined),value:dark,onChanged:(v){setState(()=>dark=v);save();}),ListTile(leading:const Icon(Icons.delete_forever_outlined,color:kRed),title:const Text('Reset All Data'),onTap:() async {Navigator.pop(context);if(await confirm('Reset everything?','All personal and friend records will be deleted.')){if(await confirm('Final confirmation','This cannot be undone. Continue?')){setState((){records.clear();friends.clear();});save();}}})]))),body:IndexedStack(index:tab,children:[dashboard(),tradesPage(),friendsPage()]),floatingActionButton:tab==2?null:FloatingActionButton(onPressed:()=>openEntry(),child:const Icon(Icons.add)),bottomNavigationBar:NavigationBar(selectedIndex:tab,onDestinationSelected:(v)=>setState(()=>tab=v),destinations:const [NavigationDestination(icon:Icon(Icons.dashboard_outlined),selectedIcon:Icon(Icons.dashboard),label:'Home'),NavigationDestination(icon:Icon(Icons.receipt_long_outlined),selectedIcon:Icon(Icons.receipt_long),label:'Trades'),NavigationDestination(icon:Icon(Icons.people_outline),selectedIcon:Icon(Icons.people),label:'Friends')])));
+  Future<void> deleteEntry(Entry e) async { if (!await confirm('Delete entry?')) return; setState(() => entries.removeWhere((x) => x.id == e.id)); await save(); }
+  Future<void> exportPdf({String? friend}) async {
+    final rows = entries.where((e) => friend == null ? e.friend.isEmpty : e.friend == friend).toList()..sort((a, b) => b.date.compareTo(a.date));
+    final pdf = pw.Document();
+    pdf.addPage(pw.MultiPage(pageFormat: PdfPageFormat.a4, build: (_) => [pw.Text(friend == null ? 'Trade Ledger Pro - Personal Report' : 'Trade Ledger Pro - $friend', style: pw.TextStyle(fontSize: 18, fontWeight: pw.FontWeight.bold)), pw.SizedBox(height: 12), pw.Text('Net P&L: INR ${(sum(rows) / 100).toStringAsFixed(2)}'), pw.SizedBox(height: 12), pw.TableHelper.fromTextArray(headers: ['Date', 'Category / Type', 'Notes', 'Amount (INR)'], data: rows.map((e) => [DateFormat('dd-MM-yyyy').format(e.date), e.friend.isEmpty ? e.category : e.kind, e.note, (e.signed / 100).toStringAsFixed(2)]).toList())]));
+    await Printing.layoutPdf(onLayout: (_) async => pdf.save());
   }
-  Widget dashboard(){
-    final groups={for(final c in categories)c:personal.where((r)=>r.category==c).fold(0,(int s,Record r)=>s+r.signed)};
-    return ListView(padding:const EdgeInsets.fromLTRB(16,12,16,110),children:[Container(padding:const EdgeInsets.all(22),decoration:BoxDecoration(gradient:LinearGradient(colors:net<0?[const Color(0xFF642E49),const Color(0xFF30213E)]:[const Color(0xFF273D67),const Color(0xFF35296D)]),borderRadius:BorderRadius.circular(24)),child:Column(crossAxisAlignment:CrossAxisAlignment.start,children:[Text(net<0?'LOSS TO RECOVER':'ALL-TIME NET PROFIT',style:const TextStyle(color:Colors.white70,fontWeight:FontWeight.w700,letterSpacing:1)),const SizedBox(height:10),Text(money(net),style:TextStyle(color:net<0?const Color(0xFFFF9EAD):const Color(0xFF5CE4B2),fontSize:34,fontWeight:FontWeight.w900)),const SizedBox(height:8),Text(net>=0?'✓ All Loss Recovered!':'Keep tracking your recovery',style:const TextStyle(color:Colors.white70))])),const SizedBox(height:14),Row(children:[Expanded(child:metric('TOTAL PROFIT',profit,kGreen,Icons.trending_up)),const SizedBox(width:10),Expanded(child:metric('TOTAL LOSS',loss,kRed,Icons.trending_down))]),const SizedBox(height:24),const Text('Category-wise P&L',style:TextStyle(fontSize:18,fontWeight:FontWeight.w800)),const SizedBox(height:12),Row(crossAxisAlignment:CrossAxisAlignment.start,children:categories.map((c)=>Expanded(child:Padding(padding:const EdgeInsets.symmetric(horizontal:2),child:Column(children:[SizedBox(height:58,width:58,child:CustomPaint(painter:RingPainter(groups[c]!,groups.values.map((e)=>e.abs()).fold(0,(a,b)=>a+b)),child:Center(child:Icon(groups[c]!<0?Icons.south_east:Icons.north_east,size:17,color:groups[c]!<0?kRed:kGreen)))),const SizedBox(height:7),Text(c=='NIFTY/BANKNIFTY/SENSEX'?'INDEX':c=='STOCK OPTION'?'OPTIONS':c,style:const TextStyle(fontSize:9,fontWeight:FontWeight.w800),maxLines:1,overflow:TextOverflow.ellipsis),FittedBox(child:Text('${groups[c]!<0?'-':''}${money(groups[c]!)}',style:TextStyle(fontSize:11,fontWeight:FontWeight.w800,color:groups[c]!<0?kRed:kGreen)))])))).toList()),const SizedBox(height:24),Row(mainAxisAlignment:MainAxisAlignment.spaceBetween,children:[const Text('Category Summary',style:TextStyle(fontSize:18,fontWeight:FontWeight.w800)),Text('${personal.length} trades')]),const SizedBox(height:8),...categories.map((c)=>Card(child:ListTile(onTap:()=>showCategory(c),leading:CircleAvatar(backgroundColor:(groups[c]!<0?kRed:kGreen).withValues(alpha:.15),child:Icon(Icons.analytics_outlined,color:groups[c]!<0?kRed:kGreen)),title:Text(c,style:const TextStyle(fontSize:13,fontWeight:FontWeight.w700)),subtitle:Text('${personal.where((r)=>r.category==c).length} entries'),trailing:Text('${groups[c]!<0?'-':''}${money(groups[c]!)}',style:TextStyle(fontWeight:FontWeight.w800,color:groups[c]!<0?kRed:kGreen))))) ]);
+  Widget metric(String title, String value, Color color) => Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(value, style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800, color: color)), const SizedBox(height: 5), Text(title, style: const TextStyle(fontSize: 11))]));
+  Widget section(String title) => Padding(padding: const EdgeInsets.symmetric(vertical: 14), child: Text(title, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800)));
+  Widget homePage() {
+    final net = sum(personal);
+    return ListView(padding: const EdgeInsets.fromLTRB(16, 8, 16, 110), children: [Container(padding: const EdgeInsets.all(20), decoration: BoxDecoration(gradient: const LinearGradient(colors: [Color(0xFF332050), Color(0xFF6035AA)]), borderRadius: BorderRadius.circular(24)), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [const Text('ALL-TIME P&L', style: TextStyle(color: Colors.white70, fontWeight: FontWeight.bold)), const SizedBox(height: 8), Text(fmt(net), style: const TextStyle(fontSize: 34, fontWeight: FontWeight.bold, color: Colors.white)), const Divider(color: Colors.white24, height: 28), Row(children: [metric('Profit', fmt(totalProfit), green), metric('Loss', fmt(totalLoss), red), metric('Trades', '${personal.length}', Colors.white)])])), section('Category-wise P&L'), Row(children: categories.map((c) { final n = sum(personal.where((e) => e.category == c)); return Expanded(child: Padding(padding: const EdgeInsets.symmetric(horizontal: 2), child: Column(children: [SizedBox(width: 56, height: 56, child: CustomPaint(painter: RingPainter(n: n, color: signedColor(n)), child: Icon(n < 0 ? Icons.south_east : Icons.north_east, color: signedColor(n)))), const SizedBox(height: 7), FittedBox(fit: BoxFit.scaleDown, child: Text(c, style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold))), FittedBox(fit: BoxFit.scaleDown, child: Text(fmt(n), style: TextStyle(fontSize: 11, color: signedColor(n), fontWeight: FontWeight.bold)))]))); }).toList()), section('Monthly P&L'), Card(child: Padding(padding: const EdgeInsets.all(14), child: Column(children: [Row(children: [IconButton(onPressed: () => setState(() => selectedMonth = DateTime(selectedMonth.year, selectedMonth.month - 1)), icon: const Icon(Icons.chevron_left)), Expanded(child: Center(child: Text(DateFormat('MMMM yyyy').format(selectedMonth), style: const TextStyle(fontWeight: FontWeight.bold)))), IconButton(onPressed: () => setState(() => selectedMonth = DateTime(selectedMonth.year, selectedMonth.month + 1)), icon: const Icon(Icons.chevron_right))]), ...categories.map((c) { final n = sum(personal.where((e) => e.category == c && e.date.year == selectedMonth.year && e.date.month == selectedMonth.month)); return ListTile(dense: true, title: Text(c), trailing: Text(fmt(n), style: TextStyle(color: signedColor(n), fontWeight: FontWeight.bold))); }), const Divider(), ListTile(title: const Text('Monthly Net', style: TextStyle(fontWeight: FontWeight.bold)), trailing: Text(fmt(sum(personal.where((e) => e.date.year == selectedMonth.year && e.date.month == selectedMonth.month))), style: const TextStyle(fontWeight: FontWeight.bold)))]))), section('Category Summary'), ...categories.map((c) { final rows = personal.where((e) => e.category == c); final n = sum(rows); return Card(child: ListTile(onTap: () => setState(() => tab = 1), leading: const Icon(Icons.stacked_bar_chart, color: purple), title: Text(c, style: const TextStyle(fontWeight: FontWeight.bold)), subtitle: Text('${rows.length} entries'), trailing: Text(fmt(n), style: TextStyle(color: signedColor(n), fontWeight: FontWeight.bold)))); })]);
   }
-  Widget metric(String title,int amount,Color color,IconData icon)=>Card(child:Padding(padding:const EdgeInsets.all(15),child:Column(crossAxisAlignment:CrossAxisAlignment.start,children:[Icon(icon,color:color),const SizedBox(height:9),Text(title,style:const TextStyle(fontSize:10,fontWeight:FontWeight.w700)),const SizedBox(height:5),FittedBox(child:Text(money(amount),style:TextStyle(fontSize:20,fontWeight:FontWeight.w800,color:color)))])));
-  Widget tradesPage()=>ListView(padding:const EdgeInsets.all(16),children:[const Text('Grouped by trading category',style:TextStyle(color:Colors.grey)),const SizedBox(height:12),...categories.map((c){final entries=personal.where((r)=>r.category==c).toList()..sort((a,b)=>b.date.compareTo(a.date));final sum=entries.fold(0,(int s,Record r)=>s+r.signed);return Card(child:ExpansionTile(title:Text(c,style:const TextStyle(fontWeight:FontWeight.bold)),subtitle:Text('${entries.length} trades'),trailing:Text('${sum<0?'-':''}${money(sum)}',style:TextStyle(color:sum<0?kRed:kGreen,fontWeight:FontWeight.bold)),children:entries.map(entryTile).toList()));})]);
-  Widget entryTile(Record r)=>ListTile(title:Text(r.kind=='Other'?'Other • ${r.category}':r.kind),subtitle:Text('${dateLabel(r.date)}${r.note.isEmpty?'':' • ${r.note}'}'),trailing:Row(mainAxisSize:MainAxisSize.min,children:[Text(r.kind=='Other'?(r.category=='Given'?'-${money(r.paise)}':'+${money(r.paise)}'):signedMoney(r.signed),style:TextStyle(color:r.kind=='Other'?(r.category=='Given'?kRed:kGreen):r.signed<0?kRed:kGreen,fontWeight:FontWeight.bold)),PopupMenuButton<String>(onSelected:(v){if(v=='edit')openEntry(existing:r);else deleteRecord(r);},itemBuilder:(c)=>const [PopupMenuItem(value:'edit',child:Text('Edit')),PopupMenuItem(value:'delete',child:Text('Delete'))]) ]));
-
-Widget friendsPage() => ListView(
-  padding: const EdgeInsets.fromLTRB(16, 10, 16, 100),
-  children: [
-    FilledButton.icon(
-      onPressed: addFriend,
-      icon: const Icon(Icons.person_add_alt_1),
-      label: const Text('Add Friend'),
-    ),
-    const SizedBox(height: 12),
-    if (friends.isEmpty)
-      const Padding(
-        padding: EdgeInsets.all(25),
-        child: Center(
-          child: Text(
-            'Add a friend to track their separate 100% balance.',
-          ),
-        ),
-      ),
-    ...friends.map((f) {
-      final rs = records.where((r) => r.friend == f).toList()
-        ..sort((a, b) => b.date.compareTo(a.date));
-
-      return Card(
-        child: ExpansionTile(
-          title: Text(
-            f,
-            style: const TextStyle(fontWeight: FontWeight.bold),
-          ),
-          subtitle: Text(
-            '100% friend balance • ${rs.length} entries',
-          ),
-          trailing: Text(
-            '${friendNet(f) < 0 ? '-' : ''}${money(friendNet(f))}',
-            style: TextStyle(
-              color: friendNet(f) < 0 ? kRed : kGreen,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-          children: [
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 12),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: FilledButton.icon(
-                      onPressed: () => openEntry(friend: f),
-                      icon: const Icon(Icons.add),
-                      label: const Text('Add Entry'),
-                    ),
-                  ),
-                  IconButton(
-                    tooltip: 'PDF',
-                    onPressed: () => exportPdf(friend: f),
-                    icon: const Icon(Icons.picture_as_pdf_outlined),
-                  ),
-                  IconButton(
-                    tooltip: 'Remove friend',
-                    onPressed: () async {
-                      if (await confirm(
-                        'Remove $f?',
-                        'This will delete all entries for this friend.',
-                      )) {
-                        setState(() {
-                          friends.remove(f);
-                          records.removeWhere((r) => r.friend == f);
-                        });
-                        save();
-                      }
-                    },
-                    icon: const Icon(Icons.delete_outline),
-                  ),
-                ],
-              ),
-            ),
-            ...rs.map(entryTile),
-          ],
-        ),
-      );
-    }),
-  ],
-);
-  void showCategory(String c){showModalBottomSheet(context:context,isScrollControlled:true,showDragHandle:true,builder:(ctx)=>SafeArea(child:FractionallySizedBox(heightFactor:.75,child:Column(children:[ListTile(title:Text(c),trailing:IconButton(icon:const Icon(Icons.picture_as_pdf),onPressed:()=>exportPdf(category:c))),Expanded(child:ListView(children:(personal.where((r)=>r.category==c).toList()..sort((a,b)=>b.date.compareTo(a.date))).map(entryTile).toList()))]))));}
-  void categoryReport(){showModalBottomSheet(context:context,showDragHandle:true,builder:(c)=>SafeArea(child:Column(mainAxisSize:MainAxisSize.min,children:[const Text('Choose Category Report'),...categories.map((cat)=>ListTile(title:Text(cat),trailing:const Icon(Icons.download),onTap:(){Navigator.pop(c);exportPdf(category:cat);})),const SizedBox(height:12)])));}
-  void monthlyReport(){final months=personal.map((r)=>DateTime(r.date.year,r.date.month)).toSet().toList()..sort((a,b)=>b.compareTo(a));showModalBottomSheet(context:context,showDragHandle:true,builder:(c)=>SafeArea(child:Column(mainAxisSize:MainAxisSize.min,children:[const Text('Monthly PDF Reports'),if(months.isEmpty)const ListTile(title:Text('No entries yet')),SizedBox(height:math.min(months.length*60.0,450),child:ListView(children:months.map((m)=>ListTile(title:Text(DateFormat('MMMM yyyy').format(m)),trailing:const Icon(Icons.download),onTap:(){Navigator.pop(c);exportPdf(month:m);})).toList()))])));}
-  void calculator(){final q1=TextEditingController(),p1=TextEditingController(),q2=TextEditingController(),p2=TextEditingController();showModalBottomSheet(context:context,isScrollControlled:true,showDragHandle:true,builder:(c)=>StatefulBuilder(builder:(c,refresh){final a=double.tryParse(q1.text)??0,b=double.tryParse(p1.text)??0,d=double.tryParse(q2.text)??0,e=double.tryParse(p2.text)??0;final avg=a+d>0?(a*b+d*e)/(a+d):0;return Padding(padding:EdgeInsets.fromLTRB(20,10,20,MediaQuery.of(c).viewInsets.bottom+24),child:SingleChildScrollView(child:Column(mainAxisSize:MainAxisSize.min,children:[const Text('Stock Average Calculator',style:TextStyle(fontSize:20,fontWeight:FontWeight.bold)),const SizedBox(height:14),...[(q1,'Existing Quantity'),(p1,'Existing Buy Price'),(q2,'New Quantity'),(p2,'New Buy Price')].map((v)=>Padding(padding:const EdgeInsets.only(bottom:10),child:TextField(controller:v.$1,keyboardType:const TextInputType.numberWithOptions(decimal:true),onChanged:(_)=>refresh((){}),decoration:InputDecoration(labelText:v.$2,border:const OutlineInputBorder())))),Card(child:ListTile(title:const Text('Average Price'),trailing:Text('₹${avg.toStringAsFixed(2)}',style:const TextStyle(fontWeight:FontWeight.bold,fontSize:20))))])));}));}
+  Widget entryTile(Entry e) => ListTile(title: Text(e.note.isEmpty ? (e.friend.isEmpty ? e.category : e.kind) : e.note), subtitle: Text('${e.kind} • ${DateFormat('dd MMM yyyy').format(e.date)}'), trailing: Row(mainAxisSize: MainAxisSize.min, children: [Text(fmt(e.signed), style: TextStyle(color: signedColor(e.signed), fontWeight: FontWeight.bold)), PopupMenuButton<String>(onSelected: (v) => v == 'edit' ? openEntry(friend: e.friend, old: e) : deleteEntry(e), itemBuilder: (_) => const [PopupMenuItem(value: 'edit', child: Text('Edit')), PopupMenuItem(value: 'delete', child: Text('Delete'))]) ]));
+  Widget tradesPage() => ListView(padding: const EdgeInsets.fromLTRB(16, 10, 16, 110), children: [section('Trades by Category'), ...categories.map((c) { final rows = personal.where((e) => e.category == c).toList()..sort((a, b) => b.date.compareTo(a.date)); return Card(child: ExpansionTile(title: Text(c, style: const TextStyle(fontWeight: FontWeight.bold)), subtitle: Text('${rows.length} trades'), trailing: Text(fmt(sum(rows)), style: TextStyle(color: signedColor(sum(rows)), fontWeight: FontWeight.bold)), children: rows.isEmpty ? [const ListTile(title: Text('No trades yet'))] : rows.map(entryTile).toList())); })]);
+  Widget friendsPage() => ListView(padding: const EdgeInsets.fromLTRB(16, 10, 16, 110), children: [FilledButton.icon(onPressed: addFriend, icon: const Icon(Icons.person_add_alt), label: const Text('Add Friend')), const SizedBox(height: 12), if (friends.isEmpty) const Padding(padding: EdgeInsets.all(30), child: Text('Add a friend to track their separate 100% balance.', textAlign: TextAlign.center)), ...friends.map((f) { final rows = entries.where((e) => e.friend == f).toList()..sort((a, b) => b.date.compareTo(a.date)); return Card(child: ExpansionTile(title: Text(f, style: const TextStyle(fontWeight: FontWeight.bold)), subtitle: Text('100% friend balance • ${rows.length} entries'), children: [Padding(padding: const EdgeInsets.symmetric(horizontal: 12), child: Row(children: [Expanded(child: Text(fmt(friendNet(f)), style: TextStyle(color: signedColor(friendNet(f)), fontWeight: FontWeight.bold))), IconButton(onPressed: () => openEntry(friend: f), icon: const Icon(Icons.add_circle_outline), tooltip: 'Add Entry'), IconButton(onPressed: () => exportPdf(friend: f), icon: const Icon(Icons.picture_as_pdf), tooltip: 'PDF'), IconButton(onPressed: () async { if (await confirm('Remove $f and all entries?')) { setState(() { friends.remove(f); entries.removeWhere((e) => e.friend == f); }); await save(); } }, icon: const Icon(Icons.delete_outline), tooltip: 'Remove Friend')])), ...rows.map(entryTile)])); })]);
+  Widget calculatorPage() => const AverageCalculator();
+  @override Widget build(BuildContext context) => Scaffold(appBar: AppBar(title: const Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text('जय श्री पूनरासर', style: TextStyle(fontSize: 12, color: purple, fontWeight: FontWeight.bold)), Text('Trade Ledger Pro', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold))]), actions: [IconButton(onPressed: widget.onTheme, icon: Icon(widget.dark ? Icons.light_mode_outlined : Icons.dark_mode_outlined))]), drawer: Drawer(child: SafeArea(child: ListView(children: [const DrawerHeader(child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisAlignment: MainAxisAlignment.center, children: [Text('जय श्री पूनरासर', style: TextStyle(color: purple)), SizedBox(height: 8), Text('Trade Ledger Pro', style: TextStyle(fontSize: 23, fontWeight: FontWeight.bold))])), ListTile(leading: const Icon(Icons.picture_as_pdf), title: const Text('Export Personal PDF'), onTap: () { Navigator.pop(context); exportPdf(); }), ListTile(leading: const Icon(Icons.brightness_6), title: const Text('Toggle Theme'), onTap: () { Navigator.pop(context); widget.onTheme(); }), const ListTile(leading: Icon(Icons.info_outline), title: Text('Version 2.2'))]))), body: IndexedStack(index: tab, children: [homePage(), tradesPage(), calculatorPage(), friendsPage()]), floatingActionButton: tab == 0 || tab == 1 ? FloatingActionButton(onPressed: () => openEntry(), backgroundColor: purple, child: const Icon(Icons.add, color: Colors.white)) : null, bottomNavigationBar: NavigationBar(selectedIndex: tab, onDestinationSelected: (i) => setState(() => tab = i), destinations: const [NavigationDestination(icon: Icon(Icons.home_outlined), selectedIcon: Icon(Icons.home), label: 'Home'), NavigationDestination(icon: Icon(Icons.receipt_long_outlined), selectedIcon: Icon(Icons.receipt_long), label: 'Trades'), NavigationDestination(icon: Icon(Icons.calculate_outlined), selectedIcon: Icon(Icons.calculate), label: 'Avg Calc'), NavigationDestination(icon: Icon(Icons.people_outline), selectedIcon: Icon(Icons.people), label: 'Friends')]));
 }
-class RingPainter extends CustomPainter {final int amount,total;RingPainter(this.amount,this.total);@override void paint(Canvas canvas,Size size){final r=Rect.fromLTWH(4,4,size.width-8,size.height-8);final bg=Paint()..color=Colors.grey.withValues(alpha:.22)..style=PaintingStyle.stroke..strokeWidth=6;final fg=Paint()..color=amount<0?kRed:kGreen..style=PaintingStyle.stroke..strokeCap=StrokeCap.round..strokeWidth=6;canvas.drawArc(r,0,math.pi*2,false,bg);if(total>0)canvas.drawArc(r,-math.pi/2,math.pi*2*amount.abs()/total,false,fg);}@override bool shouldRepaint(covariant RingPainter old)=>old.amount!=amount||old.total!=total;}
-
+class RingPainter extends CustomPainter { final int n; final Color color; RingPainter({required this.n, required this.color}); @override void paint(Canvas canvas, Size size) { final center = Offset(size.width / 2, size.height / 2); final r = math.min(size.width, size.height) / 2 - 5; canvas.drawCircle(center, r, Paint()..color = Colors.grey.withValues(alpha: .35)..style = PaintingStyle.stroke..strokeWidth = 6); if (n != 0) canvas.drawArc(Rect.fromCircle(center: center, radius: r), -math.pi / 2, math.pi * 1.5, false, Paint()..color = color..style = PaintingStyle.stroke..strokeCap = StrokeCap.round..strokeWidth = 6); } @override bool shouldRepaint(covariant RingPainter old) => old.n != n || old.color != color; }
+class AverageCalculator extends StatefulWidget { const AverageCalculator({super.key}); @override State<AverageCalculator> createState() => _AverageCalculatorState(); }
+class _AverageCalculatorState extends State<AverageCalculator> {
+  final oldPrice = TextEditingController(), oldQty = TextEditingController(), newPrice = TextEditingController(), newQty = TextEditingController();
+  @override void dispose() { oldPrice.dispose(); oldQty.dispose(); newPrice.dispose(); newQty.dispose(); super.dispose(); }
+  Widget field(String label, TextEditingController c) => Padding(padding: const EdgeInsets.only(bottom: 12), child: TextField(controller: c, keyboardType: const TextInputType.numberWithOptions(decimal: true), onChanged: (_) => setState(() {}), decoration: InputDecoration(labelText: label, border: const OutlineInputBorder())));
+  @override Widget build(BuildContext context) { final p1 = double.tryParse(oldPrice.text), q1 = double.tryParse(oldQty.text), p2 = double.tryParse(newPrice.text), q2 = double.tryParse(newQty.text); final valid = p1 != null && p2 != null && q1 != null && q2 != null && p1.isFinite && p2.isFinite && q1.isFinite && q2.isFinite && p1 >= 0 && p2 >= 0 && q1 >= 0 && q2 >= 0 && q1 + q2 > 0; final qty = valid ? q1 + q2 : 0.0; final investment = valid ? p1 * q1 + p2 * q2 : 0.0; return ListView(padding: const EdgeInsets.fromLTRB(16, 16, 16, 100), children: [const Text('Stock Average Calculator', style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)), const SizedBox(height: 18), Card(child: Padding(padding: const EdgeInsets.all(16), child: Column(children: [field('Existing Buy Price (₹)', oldPrice), field('Existing Quantity', oldQty), field('New Buy Price (₹)', newPrice), field('New Quantity', newQty)]))), const SizedBox(height: 12), Card(child: Padding(padding: const EdgeInsets.all(20), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [const Text('New Average Price'), const SizedBox(height: 8), Text(valid ? money.format(investment / qty) : '₹0.00', style: const TextStyle(fontSize: 32, fontWeight: FontWeight.bold, color: purple)), const Divider(), ListTile(title: const Text('Total Quantity'), trailing: Text(qty.toStringAsFixed(qty == qty.roundToDouble() ? 0 : 2))), ListTile(title: const Text('Total Investment'), trailing: Text(money.format(investment)))])))]); }
+}
