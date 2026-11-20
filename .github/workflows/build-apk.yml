@@ -27,10 +27,9 @@ jobs:
 
       - name: Install Android SDK 36
         run: |
-          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
-            --licenses > /dev/null || true
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
-            "platforms;android-36"
+            "platforms;android-36" \
+            "build-tools;36.0.0"
 
       - name: Generate Android project
         run: |
@@ -49,7 +48,7 @@ jobs:
               Path("android/app/build.gradle"),
           ]
 
-          found = False
+          updated = False
 
           for p in files:
               if not p.exists():
@@ -57,46 +56,36 @@ jobs:
 
               s = p.read_text()
 
-              s, n1 = re.subn(
-                  r"compileSdk\s*=\s*flutter\.compileSdkVersion",
-                  "compileSdk = 36",
-                  s,
-              )
+              patterns = [
+                  (r"compileSdk\s*=\s*flutter\.compileSdkVersion",
+                   "compileSdk = 36"),
+                  (r"compileSdk\s+flutter\.compileSdkVersion",
+                   "compileSdk 36"),
+                  (r"compileSdk\s*=\s*\d+",
+                   "compileSdk = 36"),
+                  (r"compileSdk\s+\d+",
+                   "compileSdk 36"),
+              ]
 
-              s, n2 = re.subn(
-                  r"compileSdk\s+flutter\.compileSdkVersion",
-                  "compileSdk 36",
-                  s,
-              )
-
-              if n1 + n2 == 0:
-                  s, n3 = re.subn(
-                      r"compileSdk\s*=\s*\d+",
-                      "compileSdk = 36",
-                      s,
-                  )
-                  s, n4 = re.subn(
-                      r"compileSdk\s+\d+",
-                      "compileSdk 36",
-                      s,
-                  )
+              for pattern, replacement in patterns:
+                  s, count = re.subn(pattern, replacement, s)
+                  if count:
+                      updated = True
 
               p.write_text(s)
-              found = True
+              print("Checked:", p)
 
-              print("Updated:", p)
-              for line in s.splitlines():
-                  if "compileSdk" in line:
-                      print(line.strip())
-
-          if not found:
-              raise SystemExit("Android Gradle file not found")
+          if not updated:
+              raise SystemExit(
+                  "Could not update app compileSdk"
+              )
           PYTHON
 
       - name: Set installed app name
         run: |
           python3 - <<'PYTHON'
           from pathlib import Path
+          import re
 
           p = Path(
               "android/app/src/main/AndroidManifest.xml"
@@ -104,13 +93,15 @@ jobs:
 
           s = p.read_text()
 
-          import re
-          s = re.sub(
+          s, count = re.subn(
               r'android:label="[^"]*"',
               'android:label="TRADE LEDGER"',
               s,
               count=1,
           )
+
+          if not count:
+              raise SystemExit("App label not found")
 
           p.write_text(s)
           print("App name: TRADE LEDGER")
@@ -118,6 +109,60 @@ jobs:
 
       - name: Install Flutter dependencies
         run: flutter pub get
+
+      - name: Fix file_picker Android SDK
+        run: |
+          python3 - <<'PYTHON'
+          from pathlib import Path
+          import re
+
+          cache = Path.home() / ".pub-cache"
+
+          files = list(
+              cache.glob(
+                  "hosted/pub.dev/file_picker-*/android/build.gradle"
+              )
+          )
+
+          files += list(
+              cache.glob(
+                  "hosted/pub.dev/file_picker-*/android/build.gradle.kts"
+              )
+          )
+
+          if not files:
+              raise SystemExit(
+                  "file_picker Gradle file not found"
+              )
+
+          for p in files:
+              s = p.read_text()
+
+              patterns = [
+                  (r"compileSdkVersion\s+\d+",
+                   "compileSdkVersion 36"),
+                  (r"compileSdk\s*=\s*\d+",
+                   "compileSdk = 36"),
+                  (r"compileSdk\s+\d+",
+                   "compileSdk 36"),
+              ]
+
+              total = 0
+
+              for pattern, replacement in patterns:
+                  s, count = re.subn(
+                      pattern, replacement, s
+                  )
+                  total += count
+
+              if total == 0:
+                  raise SystemExit(
+                      f"compileSdk not found in {p}"
+                  )
+
+              p.write_text(s)
+              print("Fixed:", p)
+          PYTHON
 
       - name: Generate app icon
         run: dart run flutter_launcher_icons
