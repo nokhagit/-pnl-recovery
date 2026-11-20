@@ -1,0 +1,16 @@
+name: pnl_recovery
+description: Offline share market P&L and loss recovery tracker.
+publish_to: none
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.4.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  shared_preferences: ^2.5.3
+  intl: ^0.20.2
+
+flutter:
+  uses-material-design: true
