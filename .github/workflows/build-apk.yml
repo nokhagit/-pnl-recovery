@@ -1,8 +1,8 @@
 name: Build Android APK
 on:
-  workflow_dispatch:
   push:
     branches: [main]
+  workflow_dispatch:
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -17,8 +17,19 @@ jobs:
           channel: stable
       - name: Generate Android project
         run: flutter create --platforms=android --project-name pnl_recovery .
+      - name: Set installed app name
+        run: |
+          python3 - <<'PYTHON'
+          from pathlib import Path
+          p = Path('android/app/src/main/AndroidManifest.xml')
+          s = p.read_text()
+          s = s.replace('android:label="pnl_recovery"', 'android:label="TRADE LEDGER"')
+          p.write_text(s)
+          PYTHON
       - name: Install dependencies
         run: flutter pub get
+      - name: Generate app icon
+        run: dart run flutter_launcher_icons
       - name: Static analysis
         run: flutter analyze lib --no-fatal-infos
       - name: Build APK
@@ -26,6 +37,5 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: Trade-Ledger-Pro-v2.3-APK
+          name: Trade-Ledger-V2.5-APK
           path: build/app/outputs/flutter-apk/app-release.apk
-          retention-days: 14
