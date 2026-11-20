@@ -1,48 +1,136 @@
+
 name: Build Android APK
+
 on:
   push:
     branches: [main]
   workflow_dispatch:
+
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
-      - uses: subosito/flutter-action@v2
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
         with:
           channel: stable
 
-      - name: Generate Android project
-        run: flutter create --platforms=android --project-name pnl_recovery .
-
-      - name: Set Android compileSdk to 36
+      - name: Install Android SDK 36
         run: |
-          sed -i 's/compileSdk = flutter.compileSdkVersion/compileSdk = 36/' android/app/build.gradle.kts
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            --licenses > /dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "platforms;android-36"
+
+      - name: Generate Android project
+        run: |
+          flutter create \
+            --platforms=android \
+            --project-name pnl_recovery .
+
+      - name: Configure Android SDK 36
+        run: |
+          python3 - <<'PYTHON'
+          from pathlib import Path
+          import re
+
+          files = [
+              Path("android/app/build.gradle.kts"),
+              Path("android/app/build.gradle"),
+          ]
+
+          found = False
+
+          for p in files:
+              if not p.exists():
+                  continue
+
+              s = p.read_text()
+
+              s, n1 = re.subn(
+                  r"compileSdk\s*=\s*flutter\.compileSdkVersion",
+                  "compileSdk = 36",
+                  s,
+              )
+
+              s, n2 = re.subn(
+                  r"compileSdk\s+flutter\.compileSdkVersion",
+                  "compileSdk 36",
+                  s,
+              )
+
+              if n1 + n2 == 0:
+                  s, n3 = re.subn(
+                      r"compileSdk\s*=\s*\d+",
+                      "compileSdk = 36",
+                      s,
+                  )
+                  s, n4 = re.subn(
+                      r"compileSdk\s+\d+",
+                      "compileSdk 36",
+                      s,
+                  )
+
+              p.write_text(s)
+              found = True
+
+              print("Updated:", p)
+              for line in s.splitlines():
+                  if "compileSdk" in line:
+                      print(line.strip())
+
+          if not found:
+              raise SystemExit("Android Gradle file not found")
+          PYTHON
 
       - name: Set installed app name
         run: |
           python3 - <<'PYTHON'
           from pathlib import Path
-          p = Path('android/app/src/main/AndroidManifest.xml')
+
+          p = Path(
+              "android/app/src/main/AndroidManifest.xml"
+          )
+
           s = p.read_text()
-          s = s.replace('android:label="pnl_recovery"', 'android:label="TRADE LEDGER"')
+
+          import re
+          s = re.sub(
+              r'android:label="[^"]*"',
+              'android:label="TRADE LEDGER"',
+              s,
+              count=1,
+          )
+
           p.write_text(s)
+          print("App name: TRADE LEDGER")
           PYTHON
 
-      - name: Install dependencies
+      - name: Install Flutter dependencies
         run: flutter pub get
+
       - name: Generate app icon
         run: dart run flutter_launcher_icons
+
       - name: Static analysis
         run: flutter analyze lib --no-fatal-infos
-      - name: Build APK
+
+      - name: Build release APK
         run: flutter build apk --release
+
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: Trade-Ledger-V2.5-APK
           path: build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
