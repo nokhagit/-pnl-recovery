@@ -584,7 +584,7 @@ class DonutPainter extends CustomPainter {
     final pAngle = 2 * math.pi * profit / total;
     if (profit > 0) canvas.drawArc(rect, -math.pi / 2, pAngle, false, paint..color = gain);
     if (loss > 0) canvas.drawArc(rect, -math.pi / 2 + pAngle, 2 * math.pi - pAngle,
-      false, paint..color = loss);
+     false, paint..color = Colors.red);
   }
   @override bool shouldRepaint(covariant DonutPainter old) => old.profit != profit || old.loss != loss;
 }
